@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tempo - Video Retiming Tool</title>
+    <!--
+    ==========================================================================================
+    PROJECT: "Tempo" - Frame-Based Video Retiming Tool (Prototype)
+    VERSION: 1.5 (Adjustable Frame Rate)
+    
+    OVERVIEW:
+    This HTML file serves as a self-contained prototype for the "Tempo" application. It uses
+    React and Three.js loaded from CDNs with in-browser Babel transformation for rapid
+    prototyping without a build setup. This approach is for development and demonstration
+    purposes only.
+    
+    The application allows users to load a sequence of image frames, manipulate a timing
+    curve, and see a real-time preview of the retimed sequence. It also includes a
+    proof-of-concept for calling an AI (RIFE) frame interpolation service.
+    
+    KEY ARCHITECTURE (As per Project Spec):
+    - "Web First, Native Second": This is the web version (Phase 1).
+    - Platform Abstraction: All direct browser API calls (File System, Fetch) are
+      intentionally isolated in the `PlatformService` object. This is critical for the
+      seamless transition to the Electron version (Phase 2), where this service will be
+      replaced with a native Node.js implementation using IPC.
+      
+    HOW TO RUN:
+    Simply open this HTML file in a modern, Chromium-based browser (like Chrome or Edge)
+    that supports the File System Access API (`window.showDirectoryPicker()`).
+    
+    -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.22.5/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a1a; color: #ffffff; overflow: hidden; }
+        .app-container { height: 100vh; display: flex; flex-direction: column; }
+        .header { background: #2d2d2d; padding: 12px 20px; border-bottom: 1px solid #404040; display: flex; justify-content: space-between; align-items: center; }
+        .header {background-image: url(assets/logo.png); background-repeat: no-repeat;background-size: contain; background-position: 14px 0px;}
+        .logo { font-size: 24px; font-weight: bold; color: #00ff88; }
+ 
+        
+        /* --- LAYOUT --- */
+        .main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .top-section { display: flex; flex: 1; overflow: hidden; min-height: 0; /* Prevents flex item from growing infinitely */ }
+        .bottom-section { display: flex; height: 270px; border-top: 1px solid #404040; }
+        
+        .curve-panel { width: 50%; border-right: 1px solid #404040; background: #252525; }
+        .preview-panel { width: 50%; display: flex; flex-direction: column; }
+        .framelist-panel { width: 80%; border-right: 1px solid #404040; display: flex; flex-direction: column; padding: 16px; gap: 12px; background: #252525;}
+        .metadata-panel { width: 20%; overflow-y: auto; background: #252525; }
+        .metadata-panel .section:last-child { border-bottom: none; }
+        
+        /* --- COMPONENT STYLES --- */
+        .section { padding: 16px; border-bottom: 1px solid #404040; }
+        .section h3, .framelist-panel h3 { 
+            margin-bottom: 8px; 
+            color: #ffffff; 
+            font-size: 12px;
+            font-weight: 600; 
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .btn { background: #00ff88; color: #000000; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; transition: all 0.2s; }
+        .btn:hover { background: #00e67a; transform: translateY(-1px); }
+        .btn:disabled { background: #404040; color: #888888; cursor: not-allowed; transform: none; }
+        .btn-secondary { background: #404040; color: #ffffff; }
+        .btn-secondary:hover { background: #505050; }
+
+        .metadata-panel .btn {
+            padding: 6px 12px;
+            font-size: 12px;
+            width: 100%;
+        }
+        
+        .filmstrip { flex: 1; display: flex; gap: 2px; overflow-x: auto; overflow-y: hidden; padding-bottom: 8px; }
+        .filmstrip-item { 
+            width: 3%; 
+            height: 100%; 
+            flex-shrink: 0; background: #333333; border: 1px solid #404040; border-radius: 4px; position: relative; overflow: hidden; cursor: pointer; transition: border-color 0.2s; 
+        }
+        .filmstrip-item:hover { border-color: #00ff88; }
+        .filmstrip-item.active { border-color: #00ff88; box-shadow: 0 0 8px #00ff88; }
+        .filmstrip-item.generated { border-color: #ff6b6b; }
+        .filmstrip-item img { width: 100%; height: 100%; object-fit: cover; }
+        .frame-number { position: absolute; bottom: 2px; right: 4px; background: rgba(0, 0, 0, 0.7); color: white; padding: 2px 4px; border-radius: 2px; font-size: 10px; }
+        
+        .preview-container { flex: 1; background: #1a1a1a; display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 16px; }
+        .preview-canvas { max-width: 100%; max-height: 100%; border: 2px solid #404040; border-radius: 8px; display: block; }
+        .playback-controls { padding: 16px; background: #2d2d2d; border-top: 1px solid #404040; display: flex; gap: 12px; align-items: center; }
+        
+        /* New style for FPS selector */
+        .playback-controls select {
+            background: #404040;
+            color: #ffffff;
+            border: 1px solid #505050;
+            padding: 8px 10px;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            outline: none;
+        }
+        .playback-controls select:hover {
+            border-color: #00ff88;
+        }
+
+
+        .playhead-display { background: #ff6b6b; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; min-width: 5.5em; text-align: center; }
+        
+        .drop-zone { border: 2px dashed #404040; border-radius: 8px; padding: 20px; text-align: center; color: #888888; cursor: pointer; transition: all 0.3s; margin-top: 12px; }
+        .drop-zone:hover { border-color: #00ff88; color: #ffffff; }
+        
+        .status-indicator { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+        .status-ready { background: #00ff88; }
+        .status-loading { background: #ffaa00; }
+        .status-error { background: #ff6b6b; }
+        .progress-bar { background: #404040; height: 4px; border-radius: 2px; overflow: hidden; margin-top: 8px; }
+        .progress-fill { background: #00ff88; height: 100%; transition: width 0.3s; }
+        .info-text { font-size: 12px; color: #888888; margin-top: 8px; }
+        
+        .curve-svg { width: 100%; height: 100%; }
+        .curve-path { fill: none; stroke: #00ff88; stroke-width: 2; }
+        .curve-keyframe { fill: #00ff88; stroke: #ffffff; stroke-width: 2; transition: r 0.1s; }
+        .curve-keyframe-handle { fill: #888; stroke: #fff; stroke-width: 1; cursor: move; }
+        .grid-line { stroke: #404040; stroke-width: 1; }
+        .axis-label { fill: #888888; font-size: 12px; }
+        .curve-toolbar { display: flex; gap: 4px; margin-bottom: 8px; }
+        .tool-btn { background: #333; color: #fff; border: 1px solid #555; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 14px; }
+        .tool-btn:hover { background: #444; }
+        .tool-btn.active { background: #00ff88; color: #000; border-color: #00ff88; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel" data-presets="react">
+        const { useState, useEffect, useRef, useCallback } = React;
+        const PlatformService = {  async selectFrameFolder() { if ('showDirectoryPicker' in window) { try { const dirHandle = await window.showDirectoryPicker(); return dirHandle; } catch (err) { if (err.name !== 'AbortError') { console.error('Error selecting folder:', err); } return null; } } throw new Error('File System Access API is not supported in this browser.'); }, async loadFramesFromDirectory(dirHandle) { const frames = []; const imageExtensions = ['.png', '.jpg', '.jpeg']; for await (const [name, fileHandle] of dirHandle.entries()) { if (fileHandle.kind === 'file') { const extension = name.toLowerCase().substring(name.lastIndexOf('.')); if (imageExtensions.includes(extension)) { const file = await fileHandle.getFile(); const frameNumber = this.extractFrameNumber(name); if (frameNumber !== null) { frames.push({ name, file, frameNumber, url: URL.createObjectURL(file), isGenerated: false }); } } } } return frames.sort((a, b) => a.frameNumber - b.frameNumber); }, extractFrameNumber(filename) { const matches = filename.match(/(\d+)/g); if (matches) { return parseInt(matches[matches.length - 1]); } return null; }, async generateIntermediateFrame(startFrame, endFrame) { const formData = new FormData(); formData.append('start_image', startFrame.file); formData.append('end_image', endFrame.file); const response = await fetch('http://127.0.0.1:5000/generate', { method: 'POST', body: formData }); if (!response.ok) { const errorText = await response.text(); throw new Error(`RIFE API Error ${response.status}: ${errorText}`); } const blob = await response.blob(); return { file: new File([blob], `gen_${startFrame.frameNumber}.png`, { type: 'image/png' }), url: URL.createObjectURL(blob), isGenerated: true }; } };
+        
+        function CurveEditor({ frames, onCurveChange, currentOutputFrame }) {
+            const svgRef = useRef();
+            const svgContainerRef = useRef(null);
+            const [size, setSize] = useState({ width: 0, height: 0 });
+            const [keyframes, setKeyframes] = useState([ { x: 0, y: 0, handleIn: null, handleOut: { x: 0.25, y: 0.25 } }, { x: 1, y: 1, handleIn: { x: 0.75, y: 0.75 }, handleOut: null } ]);
+            const [dragTarget, setDragTarget] = useState(null);
+            const [activeTool, setActiveTool] = useState('select');
+            
+            useEffect(() => {
+                if (svgContainerRef.current) {
+                    const { width, height } = svgContainerRef.current.getBoundingClientRect();
+                    setSize({ width, height });
+                }
+            }, []);
+            
+            const { width, height } = size;
+            const margin = 20;
+            
+            const getScreenCoords = useCallback((nX, nY) => ({
+                x: margin + nX * (width - 2 * margin),
+                y: height - margin - nY * (height - 2 * margin),
+            }), [width, height]);
+            
+            const getNormalizedCoords = useCallback((sX, sY) => ({
+                x: (sX - margin) / (width - 2 * margin),
+                y: 1 - (sY - margin) / (height - 2 * margin),
+            }), [width, height]);
+
+            const generateBezierPath = useCallback(() => {
+                if (keyframes.length < 2 || width === 0) return '';
+                let path = '';
+                for (let i = 0; i < keyframes.length - 1; i++) {
+                    const p1 = getScreenCoords(keyframes[i].x, keyframes[i].y);
+                    const p4 = getScreenCoords(keyframes[i+1].x, keyframes[i+1].y);
+                    const cp1 = keyframes[i].handleOut ? getScreenCoords(keyframes[i].handleOut.x, keyframes[i].handleOut.y) : p1;
+                    const cp2 = keyframes[i+1].handleIn ? getScreenCoords(keyframes[i+1].handleIn.x, keyframes[i+1].handleIn.y) : p4;
+                    if (i === 0) path += `M ${p1.x} ${p1.y}`;
+                    path += ` C ${cp1.x} ${cp1.y} ${cp2.x} ${cp2.y} ${p4.x} ${p4.y}`;
+                }
+                return path;
+            }, [keyframes, getScreenCoords, width]);
+
+            const handleSvgClick = (e) => {
+                if (activeTool !== 'add' || dragTarget) return;
+                const rect = svgRef.current.getBoundingClientRect();
+                const norm = getNormalizedCoords(e.clientX - rect.left, e.clientY - rect.top);
+                norm.x = Math.max(0, Math.min(1, norm.x));
+                norm.y = Math.max(0, Math.min(1, norm.y));
+                const newKf = { x: norm.x, y: norm.y, handleIn: { x: norm.x - 0.1, y: norm.y }, handleOut: { x: norm.x + 0.1, y: norm.y } };
+                setKeyframes(prev => [...prev, newKf].sort((a, b) => a.x - b.x));
+            };
+            const handleMouseDown = (e, type, index) => { if (activeTool !== 'select') return; e.preventDefault(); e.stopPropagation(); setDragTarget({ type, index }); };
+            const handlePointClick = (e, index) => { if (activeTool !== 'delete') return; e.preventDefault(); e.stopPropagation(); if (keyframes.length > 2) { setKeyframes(prev => prev.filter((_, i) => i !== index)); } };
+            const handleMouseMove = useCallback((e) => {
+                if (!dragTarget || !svgRef.current) return;
+                const rect = svgRef.current.getBoundingClientRect();
+                const norm = getNormalizedCoords(e.clientX - rect.left, e.clientY - rect.top);
+                norm.x = Math.max(0, Math.min(1, norm.x));
+                norm.y = Math.max(0, Math.min(1, norm.y));
+                setKeyframes(prev => {
+                    const newKfs = JSON.parse(JSON.stringify(prev));
+                    const kf = newKfs[dragTarget.index];
+                    if (dragTarget.type === 'point') {
+                        const dX = norm.x - kf.x; const dY = norm.y - kf.y; kf.x = norm.x; kf.y = norm.y;
+                        if (kf.handleIn) { kf.handleIn.x += dX; kf.handleIn.y += dY; }
+                        if (kf.handleOut) { kf.handleOut.x += dX; kf.handleOut.y += dY; }
+                        return newKfs.sort((a, b) => a.x - b.x);
+                    } else if (dragTarget.type === 'handleIn' && kf.handleIn) { kf.handleIn = { x: norm.x, y: norm.y }; }
+                    else if (dragTarget.type === 'handleOut' && kf.handleOut) { kf.handleOut = { x: norm.x, y: norm.y }; }
+                    return newKfs;
+                });
+            }, [dragTarget, getNormalizedCoords]);
+            const handleMouseUp = useCallback(() => setDragTarget(null), []);
+            useEffect(() => { if (dragTarget) { document.addEventListener('mousemove', handleMouseMove); document.addEventListener('mouseup', handleMouseUp); return () => { document.removeEventListener('mousemove', handleMouseMove); document.removeEventListener('mouseup', handleMouseUp); }; } }, [dragTarget, handleMouseMove, handleMouseUp]);
+            useEffect(() => onCurveChange(keyframes), [keyframes, onCurveChange]);
+            const getPointCursor = () => { switch (activeTool) { case 'select': return 'move'; case 'delete': return 'pointer'; default: return 'default'; } };
+            
+            return (
+                <div style={{ padding: '16px', height: '100%', display: 'flex', flexDirection: 'column' }}>
+                    <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                        <h3>Retiming Curve</h3>
+                        <div className="curve-toolbar">
+                            <button title="Select and Move" className={`tool-btn ${activeTool === 'select' ? 'active' : ''}`} onClick={() => setActiveTool('select')}>✏️</button>
+                            <button title="Add Point" className={`tool-btn ${activeTool === 'add' ? 'active' : ''}`} onClick={() => setActiveTool('add')}>➕</button>
+                            <button title="Delete Point" className={`tool-btn ${activeTool === 'delete' ? 'active' : ''}`} onClick={() => setActiveTool('delete')}>🗑️</button>
+                        </div>
+                    </div>
+                    <div ref={svgContainerRef} style={{ flex: 1, minHeight: 0 }}>
+                        {width > 0 && height > 0 && (
+                            <svg ref={svgRef} width={width} height={height} className="curve-svg" onClick={handleSvgClick} style={{ cursor: activeTool === 'add' ? 'crosshair' : 'default' }}>
+                                <g><rect x={margin} y={margin} width={width - 2 * margin} height={height - 2 * margin} fill="none" />
+                                    {[...Array(6)].map((_, i) => (<g key={i}>
+                                            <line x1={margin + i * (width - 2 * margin) / 5} y1={margin} x2={margin + i * (width - 2 * margin) / 5} y2={height - margin} className="grid-line" />
+                                            <line x1={margin} y1={margin + i * (height - 2 * margin) / 5} x2={width - margin} y2={margin + i * (height - 2 * margin) / 5} className="grid-line" />
+                                    </g>))}
+                                </g>
+                                <text x={width / 2} y={height - 5} textAnchor="middle" className="axis-label">Output</text>
+                                <text x={10} y={height / 2} textAnchor="middle" transform={`rotate(-90 10 ${height / 2})`} className="axis-label">Source</text>
+                                <path d={generateBezierPath()} className="curve-path" />
+                                {keyframes.map((kf, i) => (<g key={`handles-${i}`}>
+                                        {activeTool === 'select' && kf.handleIn && <g><line x1={getScreenCoords(kf.x, kf.y).x} y1={getScreenCoords(kf.x, kf.y).y} x2={getScreenCoords(kf.handleIn.x, kf.handleIn.y).x} y2={getScreenCoords(kf.handleIn.x, kf.handleIn.y).y} stroke="#666" strokeDasharray="3,3" /><circle cx={getScreenCoords(kf.handleIn.x, kf.handleIn.y).x} cy={getScreenCoords(kf.handleIn.x, kf.handleIn.y).y} r={4} className="curve-keyframe-handle" onMouseDown={(e) => handleMouseDown(e, 'handleIn', i)} /></g>}
+                                        {activeTool === 'select' && kf.handleOut && <g><line x1={getScreenCoords(kf.x, kf.y).x} y1={getScreenCoords(kf.x, kf.y).y} x2={getScreenCoords(kf.handleOut.x, kf.handleOut.y).x} y2={getScreenCoords(kf.handleOut.x, kf.handleOut.y).y} stroke="#666" strokeDasharray="3,3" /><circle cx={getScreenCoords(kf.handleOut.x, kf.handleOut.y).x} cy={getScreenCoords(kf.handleOut.x, kf.handleOut.y).y} r={4} className="curve-keyframe-handle" onMouseDown={(e) => handleMouseDown(e, 'handleOut', i)} /></g>}
+                                </g>))}
+                                {keyframes.map((kf, i) => (<circle key={`point-${i}`} cx={getScreenCoords(kf.x, kf.y).x} cy={getScreenCoords(kf.x, kf.y).y} r={activeTool === 'delete' ? 7 : 5} className="curve-keyframe" style={{ cursor: getPointCursor(), fill: activeTool === 'delete' ? '#ff6b6b' : '#00ff88' }} onMouseDown={(e) => handleMouseDown(e, 'point', i)} onClick={(e) => handlePointClick(e, i)} />))}
+                                {currentOutputFrame !== null && frames.length > 0 && (<line x1={margin + (currentOutputFrame / 100) * (width - 2 * margin)} y1={margin} x2={margin + (currentOutputFrame / 100) * (width - 2 * margin)} y2={height - margin} stroke="#ff6b6b" strokeWidth="2" />)}
+                            </svg>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+        
+        function WebGLPreview({ frames, currentOutputFrame, dimensions, sampleCurve, textureCache }) {
+            const canvasRef = useRef();
+            const threeStuff = useRef({});
+
+            useEffect(() => {
+                if (!canvasRef.current) return;
+                const canvas = canvasRef.current;
+                const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+                const scene = new THREE.Scene();
+                const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
+                camera.position.z = 1;
+                const fragmentShader = ` uniform sampler2D tex1; uniform sampler2D tex2; uniform float mixFactor; varying vec2 vUv; void main() { gl_FragColor = mix(texture2D(tex1, vUv), texture2D(tex2, vUv), mixFactor); }`;
+                const vertexShader = `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position, 1.0); }`;
+                const material = new THREE.ShaderMaterial({ uniforms: { tex1: { value: null }, tex2: { value: null }, mixFactor: { value: 0.0 } }, vertexShader, fragmentShader, });
+                const plane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
+                scene.add(plane);
+                if (dimensions) { renderer.setSize(dimensions.width, dimensions.height); }
+                threeStuff.current = { renderer, scene, camera, material };
+                return () => renderer.dispose();
+            }, [dimensions]);
+
+            useEffect(() => {
+                if (frames.length === 0 || currentOutputFrame === null || !threeStuff.current.material || !sampleCurve || !textureCache) return;
+                const { renderer, scene, camera, material } = threeStuff.current;
+                
+                const getTexture = (url) => textureCache[url];
+
+                const sourceFrame = sampleCurve(currentOutputFrame);
+                const frameIdx1 = Math.floor(sourceFrame);
+                const frameIdx2 = Math.min(frames.length - 1, Math.ceil(sourceFrame));
+                const mixFactor = sourceFrame - frameIdx1;
+                const frame1 = frames[frameIdx1];
+                const frame2 = frames[frameIdx2] || frame1;
+                
+                material.uniforms.tex1.value = getTexture(frame1.url);
+                material.uniforms.tex2.value = getTexture(frame2.url);
+                material.uniforms.mixFactor.value = mixFactor;
+                renderer.render(scene, camera);
+            }, [frames, currentOutputFrame, sampleCurve, textureCache]);
+
+            return <canvas ref={canvasRef} className="preview-canvas"/>;
+        }
+
+
+        function TempoApp() {
+            const [frames, setFrames] = useState([]);
+            const [frameDimensions, setFrameDimensions] = useState(null);
+            const [currentOutputFrame, setCurrentOutputFrame] = useState(0);
+            const [isPlaying, setIsPlaying] = useState(false);
+            const [curve, setCurve] = useState([]);
+            const [status, setStatus] = useState({ state: 'ready', message: 'Ready' });
+            const [progress, setProgress] = useState(0);
+            const [isPreloading, setIsPreloading] = useState(false);
+            const [currentFps, setCurrentFps] = useState(30);
+            
+            const animationFrameRef = useRef(); 
+            const lastFrameTime = useRef(0);
+            const textureCache = useRef({});
+            
+            const availableFrameRates = [10, 15, 24, 30, 60, 120];
+
+            const isLoading = status.state === 'loading';
+            const sampleCurve = useCallback((outputTime) => { if (!curve || curve.length < 2 || frames.length === 0) return 0; const normalizedTime = Math.max(0, Math.min(1, outputTime / 100)); for (let i = 0; i < curve.length - 1; i++) { const p0 = curve[i], p3 = curve[i + 1]; if (normalizedTime >= p0.x && normalizedTime <= p3.x) { const t = (p3.x - p0.x === 0) ? 0 : (normalizedTime - p0.x) / (p3.x - p0.x); const y0 = p0.y, y1 = p0.handleOut ? p0.handleOut.y : p0.y; const y2 = p3.handleIn ? p3.handleIn.y : p3.y, y3 = p3.y; const bezierY = Math.pow(1 - t, 3) * y0 + 3 * Math.pow(1 - t, 2) * t * y1 + 3 * (1 - t) * t * t * y2 + Math.pow(t, 3) * y3; return bezierY * (frames.length - 1); } } return frames.length - 1; }, [curve, frames.length]);
+            
+            const loadFrames = async () => {
+                setStatus({ state: 'loading', message: 'Selecting folder...' });
+                setFrameDimensions(null);
+                setFrames([]);
+                textureCache.current = {};
+
+                try {
+                    const dirHandle = await PlatformService.selectFrameFolder();
+                    if (dirHandle) {
+                        setStatus({ state: 'loading', message: 'Loading frames from disk...' });
+                        const loadedFrames = await PlatformService.loadFramesFromDirectory(dirHandle);
+                        if (loadedFrames.length === 0) { throw new Error("No valid image frames found."); }
+                        
+                        setIsPreloading(true);
+                        setStatus({ state: 'loading', message: `Preloading ${loadedFrames.length} textures...` });
+                        
+                        const manager = new THREE.LoadingManager();
+                        manager.onLoad = () => {
+                            setIsPreloading(false);
+                            setStatus({ state: 'ready', message: `Loaded ${loadedFrames.length} frames.` });
+                        };
+                        
+                        const loader = new THREE.TextureLoader(manager);
+                        loadedFrames.forEach(frame => {
+                            const texture = loader.load(frame.url);
+                            texture.minFilter = THREE.LinearFilter;
+                            texture.magFilter = THREE.LinearFilter;
+                            textureCache.current[frame.url] = texture;
+                        });
+
+                        setFrames(loadedFrames);
+                        setCurrentOutputFrame(0);
+                        
+                        const firstFrameUrl = loadedFrames[0].url;
+                        const img = new Image();
+                        img.onload = () => { setFrameDimensions({ width: img.naturalWidth, height: img.naturalHeight }); };
+                        img.src = firstFrameUrl;
+                    } else {
+                        setStatus({ state: 'ready', message: 'Folder selection cancelled.' });
+                    }
+                } catch (error) {
+                    console.error('Error loading frames:', error);
+                    setStatus({ state: 'error', message: `Error: ${error.message}` });
+                    setIsPreloading(false);
+                }
+            };
+            
+            // --- START: ROBUST PLAYBACK LOGIC ---
+
+            useEffect(() => {
+                // If not playing, we don't need to do anything. The cleanup function
+                // from the previous render will have already stopped the animation.
+                if (!isPlaying) {
+                    return;
+                }
+
+                // The animate function is defined *inside* the effect.
+                // This guarantees it closes over the most recent `currentFps` state.
+                const animate = (timestamp) => {
+                    const frameDuration = 1000 / currentFps;
+                    const deltaTime = timestamp - lastFrameTime.current;
+
+                    if (deltaTime >= frameDuration) {
+                        lastFrameTime.current = timestamp;
+                        // Use functional update to avoid stale state issues
+                        setCurrentOutputFrame(prev => (prev + 1) % 101);
+                    }
+                    
+                    // Request the next frame in the loop.
+                    animationFrameRef.current = requestAnimationFrame(animate);
+                };
+
+                // Initialize timing and start the animation loop.
+                lastFrameTime.current = performance.now();
+                animationFrameRef.current = requestAnimationFrame(animate);
+
+                // The cleanup function is crucial. It runs whenever the dependencies
+                // (`isPlaying`, `currentFps`) change, or when the component unmounts.
+                // This ensures the old animation loop is ALWAYS cancelled before a new one starts.
+                return () => {
+                    cancelAnimationFrame(animationFrameRef.current);
+                };
+            }, [isPlaying, currentFps]); // The effect re-runs if `isPlaying` or `currentFps` changes.
+
+            const handlePlay = () => {
+                setIsPlaying(prev => !prev);
+            };
+
+            const handleFpsChange = (e) => {
+                setCurrentFps(parseInt(e.target.value, 10));
+            };
+
+            // --- END: ROBUST PLAYBACK LOGIC ---
+
+            const generateSlowMoFrames = async () => {  
+                if (frames.length < 2) return; 
+                setStatus({ state: 'loading', message: 'Generating frame...' }); 
+                setProgress(0); 
+                try { 
+                    const intermediateFrame = await PlatformService.generateIntermediateFrame(frames[0], frames[1]); const newFrame = { ...intermediateFrame, frameNumber: frames[0].frameNumber + 0.5, name: `generated_${frames[0].frameNumber}_${frames[1].frameNumber}.png`, }; 
+                    const newFrames = [...frames]; 
+                    newFrames.splice(1, 0, newFrame); 
+                    setFrames(newFrames); 
+                    setProgress(100); 
+                    setStatus({ state: 'ready', message: 'Frame generation complete.' }); 
+                } catch (error) { 
+                    console.error('Error generating frames:', error); 
+                    setStatus({ state: 'error', message: `API Error: ${error.message}` }); 
+                } 
+            };
+
+            const handleFilmstripClick = useCallback((targetSourceFrameIndex) => { if (!sampleCurve) return; let lastFrameBeforeTarget = 0; for (let outputFrame = 0; outputFrame <= 100; outputFrame++) { const displayedSourceFrame = sampleCurve(outputFrame); const displayedSourceIndex = Math.floor(displayedSourceFrame); if (displayedSourceIndex === targetSourceFrameIndex) { setCurrentOutputFrame(outputFrame); return; } if (displayedSourceIndex < targetSourceFrameIndex) { lastFrameBeforeTarget = outputFrame; } } setCurrentOutputFrame(lastFrameBeforeTarget); }, [sampleCurve]);
+            const currentSourceIndex = frames.length > 0 ? Math.floor(sampleCurve(currentOutputFrame)) : -1;
+
+            return (
+                <div className="app-container">
+                    <header className="header">
+                        <div className="logo">Tempo</div>
+                        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                            <span className={`status-indicator status-${status.state}`}></span>
+                            <span style={{ fontSize: '14px', color: '#888888' }}>{status.message}</span>
+                        </div>
+                    </header>
+                    <main className="main-content">
+                        <div className="top-section">
+                            <div className="curve-panel">
+                                <CurveEditor frames={frames} onCurveChange={setCurve} currentOutputFrame={currentOutputFrame}/>
+                            </div>
+                            <div className="preview-panel">
+                                <div className="preview-container">
+                                    {frames.length > 0 ? ( 
+                                        <WebGLPreview 
+                                            frames={frames} 
+                                            currentOutputFrame={currentOutputFrame}
+                                            dimensions={frameDimensions}
+                                            sampleCurve={sampleCurve}
+                                            textureCache={textureCache.current}
+                                        /> 
+                                    ) : ( 
+                                        <div style={{ textAlign: 'center', color: '#888888' }}>
+                                            <div style={{ fontSize: '48px', marginBottom: '16px' }}>🎬</div>
+                                            <div>No frames loaded</div>
+                                            <div style={{ fontSize: '12px', marginTop: '8px' }}> Select a folder to begin </div>
+                                        </div>
+                                     )}
+                                </div>
+                                <div className="playback-controls">
+                                    <button className="btn" onClick={handlePlay} disabled={frames.length === 0 || isLoading || isPreloading}>{isPlaying ? '⏸️ Pause' : '▶️ Play'}</button>
+                                    <button className="btn btn-secondary" onClick={() => setCurrentOutputFrame(0)} disabled={frames.length === 0 || isLoading || isPreloading}>⏮️</button>
+                                    <div className="playhead-display">Out: {currentOutputFrame}</div>
+                                    <input type="range" min={0} max={100} value={currentOutputFrame} onChange={(e) => setCurrentOutputFrame(parseInt(e.target.value))} style={{ flex: 1 }} disabled={frames.length === 0 || isLoading || isPreloading}/>
+                                    
+                                    <select value={currentFps} onChange={handleFpsChange} disabled={frames.length === 0 || isLoading || isPreloading}>
+                                        {availableFrameRates.map(fps => (
+                                            <option key={fps} value={fps}>{fps} fps</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="bottom-section">
+                            <div className="framelist-panel">
+                                <div>
+                                    <h3>Frame Sequence</h3>
+                                    {frames.length === 0 ? (
+                                        <div className="drop-zone" onClick={loadFrames}>
+                                            <div>📁</div>
+                                            <div>Select Frame Folder</div>
+                                        </div>
+                                    ) : (
+                                        <button className="btn" onClick={loadFrames} disabled={isLoading || isPreloading} style={{marginTop: '0px'}}>Change Folder</button>
+                                    )}
+                                    {(isLoading || isPreloading) && <div className="progress-bar"><div className="progress-fill" style={{ width: `100%` }}></div></div>}
+                                </div>
+                                <div className="filmstrip">
+                                    {frames.map((frame, index) => (
+                                        <div key={frame.name + index} className={`filmstrip-item ${frame.isGenerated ? 'generated' : ''} ${index === currentSourceIndex ? 'active' : ''}`} onClick={() => handleFilmstripClick(index)}>
+                                            <img src={frame.url} alt={`Frame ${frame.frameNumber}`} />
+                                            <div className="frame-number">{frame.frameNumber}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                            <div className="metadata-panel">
+                                <div className="section">
+                                    <h3>RIFE Processing</h3>
+                                    <p className="info-text" style={{marginBottom: '12px', marginTop: 0}}>Generate AI frames for smooth slow motion.</p>
+                                    <button className="btn" onClick={generateSlowMoFrames} disabled={frames.length < 2 || isLoading || isPreloading}>{isLoading ? '🔄 Generating...' : '✨ Generate Slow-Mo'}</button>
+                                </div>
+                                <div className="section">
+                                    <h3>Export</h3>
+                                    <button className="btn btn-secondary" disabled>📦 Export Sequence</button>
+                                </div>
+                                <div className="section">
+                                    <h3>Project Info</h3>
+                                    <div className="info-text" style={{marginTop: 0}}>
+                                        <div>Total Frames: {frames.length}</div>
+                                        <div>Generated: {frames.filter(f => f.isGenerated).length}</div>
+                                        <div>Original: {frames.filter(f => !f.isGenerated).length}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </main>
+                </div>
+            );
+        }
+
+        ReactDOM.render(<TempoApp />, document.getElementById('root'));
+    </script>
+</body>
+</html>
