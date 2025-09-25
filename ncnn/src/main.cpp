@@ -5,6 +5,7 @@
 #include "mat.h"
 #include <vector>
 #include <cstring>
+#include <cstdint>
 
 // Global net object to avoid reloading the model on every call
 ncnn::Net rife_net;
@@ -12,6 +13,8 @@ bool model_loaded = false;
 
 // Function to initialize the model (call once from JS)
 bool init_rife_model() {
+    // If you are using a version of ncnn from after late 2023, the custom layer
+    // is often found automatically. If not, this is still the correct way to register it.
     rife_net.register_custom_layer("rife.Warp", ncnn::Warp_layer_creator);
     
     // Load the model from Emscripten's virtual filesystem
@@ -22,22 +25,46 @@ bool init_rife_model() {
     return true;
 }
 
+// --- START: MODIFICATIONS ---
+
+// Helper function to convert interleaved RGB float array to a planar ncnn::Mat
+void convert_rgb_float_to_mat(const float* rgb_data, ncnn::Mat& mat, int w, int h) {
+    // Create a 3-channel Mat. By default, ncnn::Mat is planar (RRR...GGG...BBB...)
+    mat.create(w, h, 3, sizeof(float));
+
+    // Get pointers to each channel's data plane
+    float* r_ptr = mat.channel(0);
+    float* g_ptr = mat.channel(1);
+    float* b_ptr = mat.channel(2);
+    
+    // De-interleave the input data into the planar Mat
+    for (int i = 0; i < w * h; ++i) {
+        r_ptr[i] = rgb_data[i * 3 + 0];
+        g_ptr[i] = rgb_data[i * 3 + 1];
+        b_ptr[i] = rgb_data[i * 3 + 2];
+    }
+}
+
 // Main inference function
-// Input: flat vector of RGB float data [0,1], width, height
-// Output: flat vector of RGB float data [0,1]
-std::vector<float> run_inference(const std::vector<float>& img0_data, 
-                                const std::vector<float>& img1_data, 
-                                int w, int h, float timestep_val) {
+// Input: flat vector of interleaved RGB float data [0,1], width, height
+// Output: flat vector of interleaved RGB float data [0,1]
+std::vector<float> run_inference(uintptr_t img0_ptr, 
+                                 uintptr_t img1_ptr, 
+                                 int w, int h, float timestep_val) {
     if (!model_loaded) {
         return {}; // Return empty vector on error
     }
 
-    // Input data is flat RGB, so we need from_pixels to convert to ncnn's planar format
-    ncnn::Mat in0_orig = ncnn::Mat::from_pixels((const unsigned char*)img0_data.data(), ncnn::Mat::PIXEL_RGB, w, h, ncnn::Mat::PIXEL_FORMAT_RGB_FLOAT);
-    ncnn::Mat in1_orig = ncnn::Mat::from_pixels((const unsigned char*)img1_data.data(), ncnn::Mat::PIXEL_RGB, w, h, ncnn::Mat::PIXEL_FORMAT_RGB_FLOAT);
-    
-    // --- START: MODIFICATIONS ---
+    // Cast the integer pointers back to actual float pointers
+    const float* img0_data = reinterpret_cast<const float*>(img0_ptr);
+    const float* img1_data = reinterpret_cast<const float*>(img1_ptr);
 
+    // Replace from_pixels with our manual conversion
+    ncnn::Mat in0_orig;
+    ncnn::Mat in1_orig;
+    convert_rgb_float_to_mat(img0_data, in0_orig, w, h);
+    convert_rgb_float_to_mat(img1_data, in1_orig, w, h);
+    
     // 1. Calculate padded dimensions
     const int pad_to = 32;
     int w_padded = (w + pad_to - 1) / pad_to * pad_to;
@@ -64,15 +91,25 @@ std::vector<float> run_inference(const std::vector<float>& img0_data,
     ncnn::Mat out;
     ncnn::copy_cut_border(out_padded, out, 0, h_padded - h, 0, w_padded - w);
     
-    // --- END: MODIFICATIONS ---
-
-    // The output `out` is in ncnn's planar C,H,W format. We need to convert it back to interleaved RGB.
-    // The model outputs floats in [0,1] range, which is what the function is expected to return.
+    // The 'out' Mat is planar (RRR...GGG...BBB...). We need to convert it back to
+    // interleaved RGB (RGBRGBRGB...) for the web canvas.
     std::vector<float> result(w * h * 3);
-    out.to_pixels((unsigned char*)result.data(), ncnn::Mat::PIXEL_RGB, ncnn::Mat::PIXEL_FORMAT_RGB_FLOAT);
+    
+    // Replace to_pixels with manual conversion
+    const float* r_ptr = out.channel(0);
+    const float* g_ptr = out.channel(1);
+    const float* b_ptr = out.channel(2);
+
+    for (int i = 0; i < w * h; ++i) {
+        result[i * 3 + 0] = r_ptr[i];
+        result[i * 3 + 1] = g_ptr[i];
+        result[i * 3 + 2] = b_ptr[i];
+    }
     
     return result;
 }
+
+// --- END: MODIFICATIONS ---
 
 // Emscripten Bindings
 EMSCRIPTEN_BINDINGS(rife_module) {
@@ -82,7 +119,7 @@ EMSCRIPTEN_BINDINGS(rife_module) {
 }
 
 #else
-// Native version for proof-of-concept
+// Native version for proof-of-concept (NO CHANGES NEEDED HERE)
 #include <iostream>
 #include "net.h"
 #include "warp.h"
@@ -132,7 +169,7 @@ int main() {
     stbi_image_free(pixel_data0);
     stbi_image_free(pixel_data1);
 
-    // --- START: MODIFICATIONS ---
+    // --- RIFE Specific Logic ---
 
     // 1. Calculate padded dimensions
     const int pad_to = 32;
@@ -163,8 +200,6 @@ int main() {
     ncnn::Mat out;
     ncnn::copy_cut_border(out_padded, out, 0, h_padded - h, 0, w_padded - w);
     
-    // --- END: MODIFICATIONS ---
-
     // Post-process and Save Output
     // Convert the output ncnn::Mat back to pixel data
     // NOTE: RIFE outputs floats in [0, 1] range, so we multiply by 255
