@@ -10,7 +10,7 @@ Video frame retiming in browser, proof of concept. Expect bugs!
 **Chrome and Edge** only - test it out at
 [https://electricazimuth.github.io/tempo/](https://electricazimuth.github.io/tempo/)
 
-
+Currently using RIFE 4.6 running in browser as a wasm assembly.
 ___
 
 
@@ -20,7 +20,7 @@ ___
 
 ## 1. Project Background & Vision
 
-"Tempo" will be a desktop application that provides filmmakers, animators, and VFX artists with an intuitive tool for retiming video sequences. Unlike traditional video editors, Tempo operates on a sequence of numbered image frames (e.g., `frame.0001.png`, `frame.0002.png`, ...), which is a standard workflow in professional post-production.
+"Tempo" is a local web application that provides filmmakers, animators, and VFX artists with an intuitive tool for retiming video sequences. Unlike traditional video editors, Tempo operates on a sequence of numbered image frames (e.g., `frame.0001.png`, `frame.0002.png`, ...), which is a standard workflow in professional post-production.
 
 The core feature is a user-manipulable curve that dictates the playback speed of the frame sequence. Slowing down the sequence will trigger AI-powered frame interpolation (RIFE) to create smooth, high-quality slow-motion.
 
@@ -48,9 +48,9 @@ Our development strategy is **"Web First, Native Second."** We will build the co
 *   **F3.5:** Standard playback controls (Play, Pause, Seek, Loop) must be available for the preview.
 
 #### 2.4. AI Frame Generation (RIFE Interpolation)
-*   **F4.1:** The application will have a "Render Intermediates" or "Generate Slow-Mo Frames" button with a pre-flight confirmation dialog.
+*   **F4.1:** The application will have a "Render Intermediates" button with a pre-flight confirmation dialog.
 *   **F4.2:** On activation, the application will analyze the timing curve to identify all instances where new frames need to be generated (i.e., between existing frames in slow-motion segments).
-*   **F4.3:** For each required intermediate frame, the application will send the two bracketing source frames (Frame A and Frame B) to a designated RIFE API endpoint.
+*   **F4.3:** For each required intermediate frame, the application will send the two bracketing source frames (Frame A and Frame B) to a designated RIFE endpoint.
 *   **F4.4:** The application will receive the generated intermediate frame from the API and display it in the timeline. The new frame should be visually distinct (e.g., different color on the filmstrip) to indicate it is a generated frame.
 *   **F4.5:** The playback preview will now use these newly generated frames instead of the real-time cross-fade for the smoothest possible preview.
 
@@ -87,7 +87,7 @@ Once the web application is stable and feature-complete, we will package it into
     *   Use Electron's **IPC (Inter-Process Communication)** and a **preload script** as the bridge between the web UI (Renderer Process) and the Node.js backend (Main Process).
     *   The Main Process will use Node's `fs` module to handle all file reading/writing and `dialog.showOpenDialog` for a native folder picker.
     *   The app will now have the ability to remember the user's last project path and provide a true "local-first" experience without repeated prompts.
-*   **API Calls:** All `fetch` calls to the RIFE API will be moved from the Renderer to the Main process. This eliminates any potential CORS issues.
+*   **API Calls:** All `fetch` calls to the RIFE API will be moved from the Renderer to the Main process. This eliminates any potential CORS issues. We will experiment with using an in browser ncnn wasm version of RIFE.
 *   **Native Features:** We will add native OS menu bars ("File > Open Folder", etc.) for better desktop integration.
 *   **Build & Distribution:** Implement an automated build process using a tool like **`electron-builder`** to create installers for macOS, Windows, and Linux.
 

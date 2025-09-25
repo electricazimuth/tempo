@@ -7,34 +7,25 @@
     <!--
     ==========================================================================================
     PROJECT: "Tempo" - Frame-Based Video Retiming Tool (Prototype)
-    VERSION: 1.5 (Adjustable Frame Rate)
+    VERSION: 2.1 (Client-Side ZIP Export)
     
     OVERVIEW:
-    This HTML file serves as a self-contained prototype for the "Tempo" application. It uses
-    React and Three.js loaded from CDNs with in-browser Babel transformation for rapid
-    prototyping without a build setup. This approach is for development and demonstration
-    purposes only.
+    This version adds the capability to export the final frame sequence as a ZIP file.
+    It uses the JSZip library to perform the compression and packaging entirely within
+    the browser, maintaining the application's serverless architecture for processing.
+    Note currently (Sep 2025) we are using Rife 4.6 an older less demanding version of RIFE
     
-    The application allows users to load a sequence of image frames, manipulate a timing
-    curve, and see a real-time preview of the retimed sequence. It also includes a
-    proof-of-concept for calling an AI (RIFE) frame interpolation service.
-    
-    KEY ARCHITECTURE (As per Project Spec):
-    - "Web First, Native Second": This is the web version (Phase 1).
-    - Platform Abstraction: All direct browser API calls (File System, Fetch) are
-      intentionally isolated in the `PlatformService` object. This is critical for the
-      seamless transition to the Electron version (Phase 2), where this service will be
-      replaced with a native Node.js implementation using IPC.
-      
     HOW TO RUN:
-    Simply open this HTML file in a modern, Chromium-based browser (like Chrome or Edge)
-    that supports the File System Access API (`window.showDirectoryPicker()`).
+    1. Place `rife_wasm.js` and `rife_wasm.wasm` in the same directory as this file.
+    2. Open this HTML file in a modern, Chromium-based browser (like Chrome or Edge).
     
     -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.22.5/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.28.4/babel.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="rife_wasm.js"></script> <!-- RIFE WASM Module -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script> <!-- JSZip Library -->
     <style>
         
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -43,7 +34,6 @@
         .header { background: #2d2d2d; padding: 12px 20px; border-bottom: 1px solid #404040; display: flex; justify-content: space-between; align-items: center; }
         .header {background-image: url(assets/logo.png); background-repeat: no-repeat;background-size: contain; background-position: 14px 0px;}
         .logo { font-size: 24px; font-weight: bold; color: #00ff88; }
- 
         
         /* --- LAYOUT --- */
         .main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -58,7 +48,7 @@
         
         /* --- COMPONENT STYLES --- */
         .section { padding: 16px; border-bottom: 1px solid #404040; }
-        .section h3, .framelist-panel h3 { 
+        .section h3, .framelist-panel h3, .curve-panel h3 { 
             margin-bottom: 8px; 
             color: #ffffff; 
             font-size: 12px;
@@ -86,7 +76,7 @@
         }
         .filmstrip-item:hover { border-color: #00ff88; }
         .filmstrip-item.active { border-color: #00ff88; box-shadow: 0 0 8px #00ff88; }
-        .filmstrip-item.generated { border-color: #ff6b6b; }
+        .filmstrip-item.generated { border: 2px solid #00aaff; } /* Changed generated color for visibility */
         .filmstrip-item img { width: 100%; height: 100%; object-fit: cover; }
         .frame-number { position: absolute; bottom: 2px; right: 4px; background: rgba(0, 0, 0, 0.7); color: white; padding: 2px 4px; border-radius: 2px; font-size: 10px; }
         
@@ -94,7 +84,6 @@
         .preview-canvas { max-width: 100%; max-height: 100%; border: 2px solid #404040; border-radius: 8px; display: block; }
         .playback-controls { padding: 16px; background: #2d2d2d; border-top: 1px solid #404040; display: flex; gap: 12px; align-items: center; }
         
-        /* New style for FPS selector */
         .playback-controls select {
             background: #404040;
             color: #ffffff;
@@ -105,16 +94,11 @@
             cursor: pointer;
             outline: none;
         }
-        .playback-controls select:hover {
-            border-color: #00ff88;
-        }
+        .playback-controls select:hover { border-color: #00ff88; }
 
-
-        .playhead-display { background: #ff6b6b; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; min-width: 5.5em; text-align: center; }
-        
+        .playhead-display { background: #ff6b6b; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; width: 5.5em; text-align: center; }
         .drop-zone { border: 2px dashed #404040; border-radius: 8px; padding: 20px; text-align: center; color: #888888; cursor: pointer; transition: all 0.3s; margin-top: 12px; }
         .drop-zone:hover { border-color: #00ff88; color: #ffffff; }
-        
         .status-indicator { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 8px; }
         .status-ready { background: #00ff88; }
         .status-loading { background: #ffaa00; }
@@ -133,28 +117,39 @@
         .tool-btn { background: #333; color: #fff; border: 1px solid #555; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 14px; }
         .tool-btn:hover { background: #444; }
         .tool-btn.active { background: #00ff88; color: #000; border-color: #00ff88; }
+
+        /* --- MODAL STYLES --- */
+        .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.7); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+        .modal-content { background: #2d2d2d; padding: 24px; border-radius: 8px; width: 90%; max-width: 450px; border: 1px solid #404040; box-shadow: 0 5px 15px rgba(0,0,0,0.5); }
+        .modal-content h3 { font-size: 18px; margin-bottom: 16px; }
+        .modal-content p { color: #ccc; margin-bottom: 12px; }
+        .modal-content .summary-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #404040; }
+        .modal-content .summary-item:last-child { border-bottom: none; }
+        .modal-buttons { display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; }
+        .modal-progress-bar { background: #555; border-radius: 4px; overflow: hidden; height: 10px; margin-top: 16px; }
+        .modal-progress-fill { background: #00ff88; height: 100%; width: 0%; transition: width 0.2s ease-in-out; }
+
     </style>
 </head>
 <body>
     <div id="root"></div>
-    <script type="text/babel" data-presets="react">
+
+        <script type="text/babel" data-presets="react">
+        // components
         const { useState, useEffect, useRef, useCallback } = React;
-        const PlatformService = {  async selectFrameFolder() { if ('showDirectoryPicker' in window) { try { const dirHandle = await window.showDirectoryPicker(); return dirHandle; } catch (err) { if (err.name !== 'AbortError') { console.error('Error selecting folder:', err); } return null; } } throw new Error('File System Access API is not supported in this browser.'); }, async loadFramesFromDirectory(dirHandle) { const frames = []; const imageExtensions = ['.png', '.jpg', '.jpeg']; for await (const [name, fileHandle] of dirHandle.entries()) { if (fileHandle.kind === 'file') { const extension = name.toLowerCase().substring(name.lastIndexOf('.')); if (imageExtensions.includes(extension)) { const file = await fileHandle.getFile(); const frameNumber = this.extractFrameNumber(name); if (frameNumber !== null) { frames.push({ name, file, frameNumber, url: URL.createObjectURL(file), isGenerated: false }); } } } } return frames.sort((a, b) => a.frameNumber - b.frameNumber); }, extractFrameNumber(filename) { const matches = filename.match(/(\d+)/g); if (matches) { return parseInt(matches[matches.length - 1]); } return null; }, async generateIntermediateFrame(startFrame, endFrame) { const formData = new FormData(); formData.append('start_image', startFrame.file); formData.append('end_image', endFrame.file); const response = await fetch('http://127.0.0.1:5000/generate', { method: 'POST', body: formData }); if (!response.ok) { const errorText = await response.text(); throw new Error(`RIFE API Error ${response.status}: ${errorText}`); } const blob = await response.blob(); return { file: new File([blob], `gen_${startFrame.frameNumber}.png`, { type: 'image/png' }), url: URL.createObjectURL(blob), isGenerated: true }; } };
+        const PlatformService = {  async selectFrameFolder() { if ('showDirectoryPicker' in window) { try { const dirHandle = await window.showDirectoryPicker(); return dirHandle; } catch (err) { if (err.name !== 'AbortError') { console.error('Error selecting folder:', err); } return null; } } throw new Error('File System Access API is not supported in this browser.'); }, async loadFramesFromDirectory(dirHandle) { const frames = []; const imageExtensions = ['.png', 'jpg', 'jpeg']; for await (const [name, fileHandle] of dirHandle.entries()) { if (fileHandle.kind === 'file') { const extension = name.toLowerCase().substring(name.lastIndexOf('.')); if (imageExtensions.includes(extension)) { const file = await fileHandle.getFile(); const frameNumber = this.extractFrameNumber(name); if (frameNumber !== null) { frames.push({ name, file, frameNumber, url: URL.createObjectURL(file), isGenerated: false }); } } } } return frames.sort((a, b) => a.frameNumber - b.frameNumber); }, extractFrameNumber(filename) { const matches = filename.match(/(\d+)/g); if (matches) { return parseInt(matches[matches.length - 1]); } return null; } };
         
-        function CurveEditor({ frames, onCurveChange, currentOutputFrame }) {
+        function CurveEditor({ frames, onCurveChange, curveKey, currentOutputFrame }) {
             const svgRef = useRef();
             const svgContainerRef = useRef(null);
             const [size, setSize] = useState({ width: 0, height: 0 });
-            const [keyframes, setKeyframes] = useState([ { x: 0, y: 0, handleIn: null, handleOut: { x: 0.25, y: 0.25 } }, { x: 1, y: 1, handleIn: { x: 0.75, y: 0.75 }, handleOut: null } ]);
+            const defaultKeyframes = () => ([ { x: 0, y: 0, handleIn: null, handleOut: { x: 0.25, y: 0.25 } }, { x: 1, y: 1, handleIn: { x: 0.75, y: 0.75 }, handleOut: null } ]);
+            const [keyframes, setKeyframes] = useState(defaultKeyframes());
             const [dragTarget, setDragTarget] = useState(null);
             const [activeTool, setActiveTool] = useState('select');
             
-            useEffect(() => {
-                if (svgContainerRef.current) {
-                    const { width, height } = svgContainerRef.current.getBoundingClientRect();
-                    setSize({ width, height });
-                }
-            }, []);
+            useEffect(() => { setKeyframes(defaultKeyframes()); }, [curveKey]);
+            useEffect(() => { if (svgContainerRef.current) { const { width, height } = svgContainerRef.current.getBoundingClientRect(); setSize({ width, height }); } }, []);
             
             const { width, height } = size;
             const margin = 20;
@@ -169,50 +164,11 @@
                 y: 1 - (sY - margin) / (height - 2 * margin),
             }), [width, height]);
 
-            const generateBezierPath = useCallback(() => {
-                if (keyframes.length < 2 || width === 0) return '';
-                let path = '';
-                for (let i = 0; i < keyframes.length - 1; i++) {
-                    const p1 = getScreenCoords(keyframes[i].x, keyframes[i].y);
-                    const p4 = getScreenCoords(keyframes[i+1].x, keyframes[i+1].y);
-                    const cp1 = keyframes[i].handleOut ? getScreenCoords(keyframes[i].handleOut.x, keyframes[i].handleOut.y) : p1;
-                    const cp2 = keyframes[i+1].handleIn ? getScreenCoords(keyframes[i+1].handleIn.x, keyframes[i+1].handleIn.y) : p4;
-                    if (i === 0) path += `M ${p1.x} ${p1.y}`;
-                    path += ` C ${cp1.x} ${cp1.y} ${cp2.x} ${cp2.y} ${p4.x} ${p4.y}`;
-                }
-                return path;
-            }, [keyframes, getScreenCoords, width]);
-
-            const handleSvgClick = (e) => {
-                if (activeTool !== 'add' || dragTarget) return;
-                const rect = svgRef.current.getBoundingClientRect();
-                const norm = getNormalizedCoords(e.clientX - rect.left, e.clientY - rect.top);
-                norm.x = Math.max(0, Math.min(1, norm.x));
-                norm.y = Math.max(0, Math.min(1, norm.y));
-                const newKf = { x: norm.x, y: norm.y, handleIn: { x: norm.x - 0.1, y: norm.y }, handleOut: { x: norm.x + 0.1, y: norm.y } };
-                setKeyframes(prev => [...prev, newKf].sort((a, b) => a.x - b.x));
-            };
+            const generateBezierPath = useCallback(() => { if (keyframes.length < 2 || width === 0) return ''; let path = ''; for (let i = 0; i < keyframes.length - 1; i++) { const p1 = getScreenCoords(keyframes[i].x, keyframes[i].y); const p4 = getScreenCoords(keyframes[i+1].x, keyframes[i+1].y); const cp1 = keyframes[i].handleOut ? getScreenCoords(keyframes[i].handleOut.x, keyframes[i].handleOut.y) : p1; const cp2 = keyframes[i+1].handleIn ? getScreenCoords(keyframes[i+1].handleIn.x, keyframes[i+1].handleIn.y) : p4; if (i === 0) path += `M ${p1.x} ${p1.y}`; path += ` C ${cp1.x} ${cp1.y} ${cp2.x} ${cp2.y} ${p4.x} ${p4.y}`; } return path; }, [keyframes, getScreenCoords, width]);
+            const handleSvgClick = (e) => { if (activeTool !== 'add' || dragTarget) return; const rect = svgRef.current.getBoundingClientRect(); const norm = getNormalizedCoords(e.clientX - rect.left, e.clientY - rect.top); norm.x = Math.max(0, Math.min(1, norm.x)); norm.y = Math.max(0, Math.min(1, norm.y)); const newKf = { x: norm.x, y: norm.y, handleIn: { x: norm.x - 0.1, y: norm.y }, handleOut: { x: norm.x + 0.1, y: norm.y } }; setKeyframes(prev => [...prev, newKf].sort((a, b) => a.x - b.x)); };
             const handleMouseDown = (e, type, index) => { if (activeTool !== 'select') return; e.preventDefault(); e.stopPropagation(); setDragTarget({ type, index }); };
             const handlePointClick = (e, index) => { if (activeTool !== 'delete') return; e.preventDefault(); e.stopPropagation(); if (keyframes.length > 2) { setKeyframes(prev => prev.filter((_, i) => i !== index)); } };
-            const handleMouseMove = useCallback((e) => {
-                if (!dragTarget || !svgRef.current) return;
-                const rect = svgRef.current.getBoundingClientRect();
-                const norm = getNormalizedCoords(e.clientX - rect.left, e.clientY - rect.top);
-                norm.x = Math.max(0, Math.min(1, norm.x));
-                norm.y = Math.max(0, Math.min(1, norm.y));
-                setKeyframes(prev => {
-                    const newKfs = JSON.parse(JSON.stringify(prev));
-                    const kf = newKfs[dragTarget.index];
-                    if (dragTarget.type === 'point') {
-                        const dX = norm.x - kf.x; const dY = norm.y - kf.y; kf.x = norm.x; kf.y = norm.y;
-                        if (kf.handleIn) { kf.handleIn.x += dX; kf.handleIn.y += dY; }
-                        if (kf.handleOut) { kf.handleOut.x += dX; kf.handleOut.y += dY; }
-                        return newKfs.sort((a, b) => a.x - b.x);
-                    } else if (dragTarget.type === 'handleIn' && kf.handleIn) { kf.handleIn = { x: norm.x, y: norm.y }; }
-                    else if (dragTarget.type === 'handleOut' && kf.handleOut) { kf.handleOut = { x: norm.x, y: norm.y }; }
-                    return newKfs;
-                });
-            }, [dragTarget, getNormalizedCoords]);
+            const handleMouseMove = useCallback((e) => { if (!dragTarget || !svgRef.current) return; const rect = svgRef.current.getBoundingClientRect(); const norm = getNormalizedCoords(e.clientX - rect.left, e.clientY - rect.top); norm.x = Math.max(0, Math.min(1, norm.x)); norm.y = Math.max(0, Math.min(1, norm.y)); setKeyframes(prev => { const newKfs = JSON.parse(JSON.stringify(prev)); const kf = newKfs[dragTarget.index]; if (dragTarget.type === 'point') { const dX = norm.x - kf.x; const dY = norm.y - kf.y; kf.x = norm.x; kf.y = norm.y; if (kf.handleIn) { kf.handleIn.x += dX; kf.handleIn.y += dY; } if (kf.handleOut) { kf.handleOut.x += dX; kf.handleOut.y += dY; } return newKfs.sort((a, b) => a.x - b.x); } else if (dragTarget.type === 'handleIn' && kf.handleIn) { kf.handleIn = { x: norm.x, y: norm.y }; } else if (dragTarget.type === 'handleOut' && kf.handleOut) { kf.handleOut = { x: norm.x, y: norm.y }; } return newKfs; }); }, [dragTarget, getNormalizedCoords]);
             const handleMouseUp = useCallback(() => setDragTarget(null), []);
             useEffect(() => { if (dragTarget) { document.addEventListener('mousemove', handleMouseMove); document.addEventListener('mouseup', handleMouseUp); return () => { document.removeEventListener('mousemove', handleMouseMove); document.removeEventListener('mouseup', handleMouseUp); }; } }, [dragTarget, handleMouseMove, handleMouseUp]);
             useEffect(() => onCurveChange(keyframes), [keyframes, onCurveChange]);
@@ -222,30 +178,20 @@
                 <div style={{ padding: '16px', height: '100%', display: 'flex', flexDirection: 'column' }}>
                     <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
                         <h3>Retiming Curve</h3>
-                        <div className="curve-toolbar">
-                            <button title="Select and Move" className={`tool-btn ${activeTool === 'select' ? 'active' : ''}`} onClick={() => setActiveTool('select')}>✏️</button>
-                            <button title="Add Point" className={`tool-btn ${activeTool === 'add' ? 'active' : ''}`} onClick={() => setActiveTool('add')}>➕</button>
-                            <button title="Delete Point" className={`tool-btn ${activeTool === 'delete' ? 'active' : ''}`} onClick={() => setActiveTool('delete')}>🗑️</button>
-                        </div>
+                        <div className="curve-toolbar"> <button title="Select and Move" className={`tool-btn ${activeTool === 'select' ? 'active' : ''}`} onClick={() => setActiveTool('select')}>✏️</button> <button title="Add Point" className={`tool-btn ${activeTool === 'add' ? 'active' : ''}`} onClick={() => setActiveTool('add')}>➕</button> <button title="Delete Point" className={`tool-btn ${activeTool === 'delete' ? 'active' : ''}`} onClick={() => setActiveTool('delete')}>🗑️</button> </div>
                     </div>
                     <div ref={svgContainerRef} style={{ flex: 1, minHeight: 0 }}>
                         {width > 0 && height > 0 && (
                             <svg ref={svgRef} width={width} height={height} className="curve-svg" onClick={handleSvgClick} style={{ cursor: activeTool === 'add' ? 'crosshair' : 'default' }}>
                                 <g><rect x={margin} y={margin} width={width - 2 * margin} height={height - 2 * margin} fill="none" />
-                                    {[...Array(6)].map((_, i) => (<g key={i}>
-                                            <line x1={margin + i * (width - 2 * margin) / 5} y1={margin} x2={margin + i * (width - 2 * margin) / 5} y2={height - margin} className="grid-line" />
-                                            <line x1={margin} y1={margin + i * (height - 2 * margin) / 5} x2={width - margin} y2={margin + i * (height - 2 * margin) / 5} className="grid-line" />
-                                    </g>))}
+                                    {[...Array(6)].map((_, i) => (<g key={i}> <line x1={margin + i * (width - 2 * margin) / 5} y1={margin} x2={margin + i * (width - 2 * margin) / 5} y2={height - margin} className="grid-line" /> <line x1={margin} y1={margin + i * (height - 2 * margin) / 5} x2={width - margin} y2={margin + i * (height - 2 * margin) / 5} className="grid-line" /> </g>))}
                                 </g>
                                 <text x={width / 2} y={height - 5} textAnchor="middle" className="axis-label">Output</text>
                                 <text x={10} y={height / 2} textAnchor="middle" transform={`rotate(-90 10 ${height / 2})`} className="axis-label">Source</text>
                                 <path d={generateBezierPath()} className="curve-path" />
-                                {keyframes.map((kf, i) => (<g key={`handles-${i}`}>
-                                        {activeTool === 'select' && kf.handleIn && <g><line x1={getScreenCoords(kf.x, kf.y).x} y1={getScreenCoords(kf.x, kf.y).y} x2={getScreenCoords(kf.handleIn.x, kf.handleIn.y).x} y2={getScreenCoords(kf.handleIn.x, kf.handleIn.y).y} stroke="#666" strokeDasharray="3,3" /><circle cx={getScreenCoords(kf.handleIn.x, kf.handleIn.y).x} cy={getScreenCoords(kf.handleIn.x, kf.handleIn.y).y} r={4} className="curve-keyframe-handle" onMouseDown={(e) => handleMouseDown(e, 'handleIn', i)} /></g>}
-                                        {activeTool === 'select' && kf.handleOut && <g><line x1={getScreenCoords(kf.x, kf.y).x} y1={getScreenCoords(kf.x, kf.y).y} x2={getScreenCoords(kf.handleOut.x, kf.handleOut.y).x} y2={getScreenCoords(kf.handleOut.x, kf.handleOut.y).y} stroke="#666" strokeDasharray="3,3" /><circle cx={getScreenCoords(kf.handleOut.x, kf.handleOut.y).x} cy={getScreenCoords(kf.handleOut.x, kf.handleOut.y).y} r={4} className="curve-keyframe-handle" onMouseDown={(e) => handleMouseDown(e, 'handleOut', i)} /></g>}
-                                </g>))}
+                                {keyframes.map((kf, i) => (<g key={`handles-${i}`}> {activeTool === 'select' && kf.handleIn && <g><line x1={getScreenCoords(kf.x, kf.y).x} y1={getScreenCoords(kf.x, kf.y).y} x2={getScreenCoords(kf.handleIn.x, kf.handleIn.y).x} y2={getScreenCoords(kf.handleIn.x, kf.handleIn.y).y} stroke="#666" strokeDasharray="3,3" /><circle cx={getScreenCoords(kf.handleIn.x, kf.handleIn.y).x} cy={getScreenCoords(kf.handleIn.x, kf.handleIn.y).y} r={4} className="curve-keyframe-handle" onMouseDown={(e) => handleMouseDown(e, 'handleIn', i)} /></g>} {activeTool === 'select' && kf.handleOut && <g><line x1={getScreenCoords(kf.x, kf.y).x} y1={getScreenCoords(kf.x, kf.y).y} x2={getScreenCoords(kf.handleOut.x, kf.handleOut.y).x} y2={getScreenCoords(kf.handleOut.x, kf.handleOut.y).y} stroke="#666" strokeDasharray="3,3" /><circle cx={getScreenCoords(kf.handleOut.x, kf.handleOut.y).x} cy={getScreenCoords(kf.handleOut.x, kf.handleOut.y).y} r={4} className="curve-keyframe-handle" onMouseDown={(e) => handleMouseDown(e, 'handleOut', i)} /></g>} </g>))}
                                 {keyframes.map((kf, i) => (<circle key={`point-${i}`} cx={getScreenCoords(kf.x, kf.y).x} cy={getScreenCoords(kf.x, kf.y).y} r={activeTool === 'delete' ? 7 : 5} className="curve-keyframe" style={{ cursor: getPointCursor(), fill: activeTool === 'delete' ? '#ff6b6b' : '#00ff88' }} onMouseDown={(e) => handleMouseDown(e, 'point', i)} onClick={(e) => handlePointClick(e, i)} />))}
-                                {currentOutputFrame !== null && frames.length > 0 && (<line x1={margin + (currentOutputFrame / 100) * (width - 2 * margin)} y1={margin} x2={margin + (currentOutputFrame / 100) * (width - 2 * margin)} y2={height - margin} stroke="#ff6b6b" strokeWidth="2" />)}
+                                {currentOutputFrame !== null && frames.length > 0 && (<line x1={margin + (currentOutputFrame / (frames.length - 1)) * (width - 2 * margin)} y1={margin} x2={margin + (currentOutputFrame / (frames.length - 1)) * (width - 2 * margin)} y2={height - margin} stroke="#ff6b6b" strokeWidth="2" />)}
                             </svg>
                         )}
                     </div>
@@ -257,182 +203,194 @@
             const canvasRef = useRef();
             const threeStuff = useRef({});
 
-            useEffect(() => {
-                if (!canvasRef.current) return;
-                const canvas = canvasRef.current;
-                const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-                const scene = new THREE.Scene();
-                const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
-                camera.position.z = 1;
-                const fragmentShader = ` uniform sampler2D tex1; uniform sampler2D tex2; uniform float mixFactor; varying vec2 vUv; void main() { gl_FragColor = mix(texture2D(tex1, vUv), texture2D(tex2, vUv), mixFactor); }`;
-                const vertexShader = `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position, 1.0); }`;
-                const material = new THREE.ShaderMaterial({ uniforms: { tex1: { value: null }, tex2: { value: null }, mixFactor: { value: 0.0 } }, vertexShader, fragmentShader, });
-                const plane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material);
-                scene.add(plane);
-                if (dimensions) { renderer.setSize(dimensions.width, dimensions.height); }
-                threeStuff.current = { renderer, scene, camera, material };
-                return () => renderer.dispose();
-            }, [dimensions]);
-
-            useEffect(() => {
-                if (frames.length === 0 || currentOutputFrame === null || !threeStuff.current.material || !sampleCurve || !textureCache) return;
-                const { renderer, scene, camera, material } = threeStuff.current;
-                
-                const getTexture = (url) => textureCache[url];
-
-                const sourceFrame = sampleCurve(currentOutputFrame);
-                const frameIdx1 = Math.floor(sourceFrame);
-                const frameIdx2 = Math.min(frames.length - 1, Math.ceil(sourceFrame));
-                const mixFactor = sourceFrame - frameIdx1;
-                const frame1 = frames[frameIdx1];
-                const frame2 = frames[frameIdx2] || frame1;
-                
-                material.uniforms.tex1.value = getTexture(frame1.url);
-                material.uniforms.tex2.value = getTexture(frame2.url);
-                material.uniforms.mixFactor.value = mixFactor;
-                renderer.render(scene, camera);
-            }, [frames, currentOutputFrame, sampleCurve, textureCache]);
-
+            useEffect(() => { if (!canvasRef.current) return; const canvas = canvasRef.current; const renderer = new THREE.WebGLRenderer({ canvas, antialias: true }); const scene = new THREE.Scene(); const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10); camera.position.z = 1; const fragmentShader = ` uniform sampler2D tex1; uniform sampler2D tex2; uniform float mixFactor; varying vec2 vUv; void main() { gl_FragColor = mix(texture2D(tex1, vUv), texture2D(tex2, vUv), mixFactor); }`; const vertexShader = `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position, 1.0); }`; const material = new THREE.ShaderMaterial({ uniforms: { tex1: { value: null }, tex2: { value: null }, mixFactor: { value: 0.0 } }, vertexShader, fragmentShader, }); const plane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material); scene.add(plane); if (dimensions) { renderer.setSize(dimensions.width, dimensions.height); } threeStuff.current = { renderer, scene, camera, material }; return () => renderer.dispose(); }, [dimensions]);
+            useEffect(() => { if (frames.length === 0 || currentOutputFrame === null || !threeStuff.current.material || !sampleCurve || !textureCache) return; const { renderer, scene, camera, material } = threeStuff.current; const getTexture = (url) => textureCache[url]; const sourceFrame = sampleCurve(currentOutputFrame); const frameIdx1 = Math.floor(sourceFrame); const frameIdx2 = Math.min(frames.length - 1, Math.ceil(sourceFrame)); const mixFactor = sourceFrame - frameIdx1; const frame1 = frames[frameIdx1]; const frame2 = frames[frameIdx2] || frame1; material.uniforms.tex1.value = getTexture(frame1.url); material.uniforms.tex2.value = getTexture(frame2.url); material.uniforms.mixFactor.value = mixFactor; renderer.render(scene, camera); }, [frames, currentOutputFrame, sampleCurve, textureCache]);
             return <canvas ref={canvasRef} className="preview-canvas"/>;
         }
 
+        function InterpolationModal({ state, onConfirm, onCancel }) {
+            if (!state.active) return null;
+            const { plan, progress, message, isProcessing } = state;
+            const totalToGenerate = plan?.jobs.reduce((sum, job) => sum + job.count, 0) || 0;
+            const totalToDrop = plan?.framesToDrop.length || 0;
 
+            return (
+                <div className="modal-overlay">
+                    <div className="modal-content">
+                        <h3>{isProcessing ? "Processing Frames" : "Confirm Retiming"}</h3>
+                        {isProcessing ? (
+                            <div>
+                                <p>{message}</p>
+                                <div className="modal-progress-bar">
+                                    <div className="modal-progress-fill" style={{ width: `${progress * 100}%` }}></div>
+                                </div>
+                            </div>
+                        ) : (
+                            <div>
+                                <p>Applying this curve will permanently alter the frame sequence. This action cannot be undone.</p>
+                                <div className="summary">
+                                    <div className="summary-item"><span>Frames to Generate:</span> <strong>{totalToGenerate}</strong></div>
+                                    <div className="summary-item"><span>Frames to Drop:</span> <strong>{totalToDrop}</strong></div>
+                                    <div className="summary-item"><span>Original Frames:</span> <strong>{plan.originalCount}</strong></div>
+                                    <div className="summary-item"><span>Final Frame Count:</span> <strong>{plan.originalCount + totalToGenerate - totalToDrop}</strong></div>
+                                </div>
+                                <div className="modal-buttons">
+                                    <button className="btn btn-secondary" onClick={onCancel}>Cancel</button>
+                                    <button className="btn" onClick={onConfirm}>Confirm & Generate</button>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+        
         function TempoApp() {
             const [frames, setFrames] = useState([]);
             const [frameDimensions, setFrameDimensions] = useState(null);
             const [currentOutputFrame, setCurrentOutputFrame] = useState(0);
             const [isPlaying, setIsPlaying] = useState(false);
             const [curve, setCurve] = useState([]);
-            const [status, setStatus] = useState({ state: 'ready', message: 'Ready' });
-            const [progress, setProgress] = useState(0);
+            const [curveResetKey, setCurveResetKey] = useState(0);
+            const [status, setStatus] = useState({ state: 'loading', message: 'Initializing RIFE module...' });
             const [isPreloading, setIsPreloading] = useState(false);
             const [currentFps, setCurrentFps] = useState(30);
-            
+            const [interpolationState, setInterpolationState] = useState({ active: false, plan: null, progress: 0, message: '', isProcessing: false });
+            const [isExporting, setIsExporting] = useState(false);
+
             const animationFrameRef = useRef(); 
             const lastFrameTime = useRef(0);
             const textureCache = useRef({});
+            const rifeModuleRef = useRef(null);
             
             const availableFrameRates = [10, 15, 24, 30, 60, 120];
-
             const isLoading = status.state === 'loading';
-            const sampleCurve = useCallback((outputTime) => { if (!curve || curve.length < 2 || frames.length === 0) return 0; const normalizedTime = Math.max(0, Math.min(1, outputTime / 100)); for (let i = 0; i < curve.length - 1; i++) { const p0 = curve[i], p3 = curve[i + 1]; if (normalizedTime >= p0.x && normalizedTime <= p3.x) { const t = (p3.x - p0.x === 0) ? 0 : (normalizedTime - p0.x) / (p3.x - p0.x); const y0 = p0.y, y1 = p0.handleOut ? p0.handleOut.y : p0.y; const y2 = p3.handleIn ? p3.handleIn.y : p3.y, y3 = p3.y; const bezierY = Math.pow(1 - t, 3) * y0 + 3 * Math.pow(1 - t, 2) * t * y1 + 3 * (1 - t) * t * t * y2 + Math.pow(t, 3) * y3; return bezierY * (frames.length - 1); } } return frames.length - 1; }, [curve, frames.length]);
             
-            const loadFrames = async () => {
-                setStatus({ state: 'loading', message: 'Selecting folder...' });
-                setFrameDimensions(null);
-                setFrames([]);
-                textureCache.current = {};
-
-                try {
-                    const dirHandle = await PlatformService.selectFrameFolder();
-                    if (dirHandle) {
-                        setStatus({ state: 'loading', message: 'Loading frames from disk...' });
-                        const loadedFrames = await PlatformService.loadFramesFromDirectory(dirHandle);
-                        if (loadedFrames.length === 0) { throw new Error("No valid image frames found."); }
-                        
-                        setIsPreloading(true);
-                        setStatus({ state: 'loading', message: `Preloading ${loadedFrames.length} textures...` });
-                        
-                        const manager = new THREE.LoadingManager();
-                        manager.onLoad = () => {
-                            setIsPreloading(false);
-                            setStatus({ state: 'ready', message: `Loaded ${loadedFrames.length} frames.` });
-                        };
-                        
-                        const loader = new THREE.TextureLoader(manager);
-                        loadedFrames.forEach(frame => {
-                            const texture = loader.load(frame.url);
-                            texture.minFilter = THREE.LinearFilter;
-                            texture.magFilter = THREE.LinearFilter;
-                            textureCache.current[frame.url] = texture;
-                        });
-
-                        setFrames(loadedFrames);
-                        setCurrentOutputFrame(0);
-                        
-                        const firstFrameUrl = loadedFrames[0].url;
-                        const img = new Image();
-                        img.onload = () => { setFrameDimensions({ width: img.naturalWidth, height: img.naturalHeight }); };
-                        img.src = firstFrameUrl;
-                    } else {
-                        setStatus({ state: 'ready', message: 'Folder selection cancelled.' });
-                    }
-                } catch (error) {
-                    console.error('Error loading frames:', error);
-                    setStatus({ state: 'error', message: `Error: ${error.message}` });
-                    setIsPreloading(false);
-                }
-            };
-            
-            // --- START: ROBUST PLAYBACK LOGIC ---
-
             useEffect(() => {
-                // If not playing, we don't need to do anything. The cleanup function
-                // from the previous render will have already stopped the animation.
-                if (!isPlaying) {
-                    return;
+                RifeModule().then(module => {
+                    rifeModuleRef.current = module;
+                    setStatus({ state: 'loading', message: "Initializing RIFE model..." });
+                    try {
+                        if (rifeModuleRef.current.initRifeModel()) {
+                            setStatus({ state: 'ready', message: "RIFE model ready." });
+                        } else { throw new Error("initRifeModel returned false."); }
+                    } catch (e) {
+                        console.error("Failed to initialize RIFE model:", e);
+                        setStatus({ state: 'error', message: "Error: Failed to initialize model." });
+                    }
+                }).catch(e => {
+                    console.error("Error loading RIFE WASM module:", e);
+                    setStatus({ state: 'error', message: "Error: Could not load RIFE module." });
+                });
+            }, []);
+
+            const sampleCurve = useCallback((outputFrame) => { if (!curve || curve.length < 2 || frames.length === 0) return outputFrame; const normalizedTime = Math.max(0, Math.min(1, outputFrame / (frames.length - 1))); for (let i = 0; i < curve.length - 1; i++) { const p0 = curve[i], p3 = curve[i + 1]; if (normalizedTime >= p0.x && normalizedTime <= p3.x) { const t = (p3.x - p0.x === 0) ? 0 : (normalizedTime - p0.x) / (p3.x - p0.x); const y0 = p0.y, y1 = p0.handleOut ? p0.handleOut.y : p0.y; const y2 = p3.handleIn ? p3.handleIn.y : p3.y, y3 = p3.y; const bezierY = Math.pow(1 - t, 3) * y0 + 3 * Math.pow(1 - t, 2) * t * y1 + 3 * (1 - t) * t * t * y2 + Math.pow(t, 3) * y3; return bezierY * (frames.length - 1); } } return frames.length - 1; }, [curve, frames.length]);
+            
+            const loadFrames = async () => { setStatus({ state: 'loading', message: 'Selecting folder...' }); setFrameDimensions(null); setFrames([]); textureCache.current = {}; try { const dirHandle = await PlatformService.selectFrameFolder(); if (dirHandle) { setStatus({ state: 'loading', message: 'Loading frames from disk...' }); const loadedFrames = await PlatformService.loadFramesFromDirectory(dirHandle); if (loadedFrames.length === 0) { throw new Error("No valid image frames found."); } setIsPreloading(true); setStatus({ state: 'loading', message: `Preloading ${loadedFrames.length} textures...` }); const manager = new THREE.LoadingManager(); manager.onLoad = () => { setIsPreloading(false); setStatus({ state: 'ready', message: `Loaded ${loadedFrames.length} frames.` }); }; const loader = new THREE.TextureLoader(manager); loadedFrames.forEach(frame => { const texture = loader.load(frame.url); texture.minFilter = THREE.LinearFilter; texture.magFilter = THREE.LinearFilter; textureCache.current[frame.url] = texture; }); setFrames(loadedFrames); setCurrentOutputFrame(0); const firstFrameUrl = loadedFrames[0].url; const img = new Image(); img.onload = () => { setFrameDimensions({ width: img.naturalWidth, height: img.naturalHeight }); }; img.src = firstFrameUrl; } else { setStatus({ state: 'ready', message: 'Folder selection cancelled.' }); } } catch (error) { console.error('Error loading frames:', error); setStatus({ state: 'error', message: `Error: ${error.message}` }); setIsPreloading(false); } };
+            const isPlayingRef = useRef(isPlaying); useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+            const animate = useCallback((timestamp) => { if (!isPlayingRef.current) { return; } const frameDuration = 1000 / currentFps; const deltaTime = timestamp - lastFrameTime.current; if (deltaTime >= frameDuration) { lastFrameTime.current = timestamp; setCurrentOutputFrame(prev => (prev + 1) % frames.length); } animationFrameRef.current = requestAnimationFrame(animate); }, [currentFps, frames.length]);
+            useEffect(() => { if (isPlaying) { lastFrameTime.current = performance.now(); animationFrameRef.current = requestAnimationFrame(animate); } else { cancelAnimationFrame(animationFrameRef.current); } return () => cancelAnimationFrame(animationFrameRef.current); }, [isPlaying, animate]);
+            const handlePlay = () => setIsPlaying(prev => !prev);
+            const handleFpsChange = (e) => setCurrentFps(parseInt(e.target.value, 10));
+
+            // --- MODIFIED --- Add { willReadFrequently: true } to canvas contexts
+            const loadImageOnCanvas = useCallback((file, canvas) => new Promise((resolve, reject) => { const ctx = canvas.getContext('2d', { willReadFrequently: true }); const url = URL.createObjectURL(file); const img = new Image(); img.onload = () => { canvas.width = img.width; canvas.height = img.height; ctx.drawImage(img, 0, 0); URL.revokeObjectURL(url); resolve(); }; img.onerror = () => reject(new Error("Failed to load image.")); img.src = url; }), []);
+            const getImageDataAsFloats = useCallback((canvas) => { const { data, width, height } = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, canvas.width, canvas.height); const floatArray = new Float32Array(width * height * 3); for (let i = 0, floatIdx = 0; i < data.length; i += 4) { floatArray[floatIdx++] = data[i] / 255.0; floatArray[floatIdx++] = data[i + 1] / 255.0; floatArray[floatIdx++] = data[i + 2] / 255.0; } return floatArray; }, []);
+            const performWasmInference = useCallback(async (canvas1, canvas2) => { const module = rifeModuleRef.current; if (!module) throw new Error("WASM module not ready."); let ptr1 = 0, ptr2 = 0; try { const width = canvas1.width, height = canvas1.height; const img0Data = getImageDataAsFloats(canvas1); const nBytes = img0Data.byteLength; ptr1 = module._malloc(nBytes); ptr2 = module._malloc(nBytes); if (!ptr1 || !ptr2) throw new Error("WASM memory allocation failed."); module.HEAPF32.set(img0Data, ptr1 / 4); module.HEAPF32.set(getImageDataAsFloats(canvas2), ptr2 / 4); const resultVector = module.runInference(ptr1, ptr2, width, height, 0.5); if (resultVector.size() === 0) throw new Error(`Inference returned empty result.`); const outputPixelData = new Uint8ClampedArray(width * height * 4); for (let i = 0; i < width * height; i++) { const p = i * 4, v = i * 3; outputPixelData[p + 0] = resultVector.get(v + 0) * 255; outputPixelData[p + 1] = resultVector.get(v + 1) * 255; outputPixelData[p + 2] = resultVector.get(v + 2) * 255; outputPixelData[p + 3] = 255; } resultVector.delete(); const newCanvas = document.createElement('canvas'); newCanvas.width = width; newCanvas.height = height; newCanvas.getContext('2d', { willReadFrequently: true }).putImageData(new ImageData(outputPixelData, width, height), 0, 0); return newCanvas; } finally { if (ptr1) module._free(ptr1); if (ptr2) module._free(ptr2); } }, [getImageDataAsFloats]);
+            const generateHierarchicalFrames = useCallback(async (startFrame, endFrame, numToGenerate) => { if (numToGenerate === 0) return []; const canvas1 = document.createElement('canvas'); const canvas2 = document.createElement('canvas'); await Promise.all([loadImageOnCanvas(startFrame.file, canvas1), loadImageOnCanvas(endFrame.file, canvas2)]); let canvases = [canvas1, canvas2]; const passes = Math.log2(numToGenerate + 1); for (let pass = 0; pass < passes; pass++) { const jobs = []; for (let i = 0; i < canvases.length - 1; i++) { jobs.push(performWasmInference(canvases[i], canvases[i+1])); } const newCanvases = await Promise.all(jobs); const nextGenerationCanvases = [canvases[0]]; for (let i = 0; i < newCanvases.length; i++) { nextGenerationCanvases.push(newCanvases[i]); nextGenerationCanvases.push(canvases[i + 1]); } canvases = nextGenerationCanvases; } const generatedCanvases = canvases.slice(1, -1); const blobPromises = generatedCanvases.map(c => new Promise(res => c.toBlob(res, 'image/png'))); const blobs = await Promise.all(blobPromises); return blobs; }, [loadImageOnCanvas, performWasmInference]);
+            const generateInterpolatedFrames = () => { if (frames.length < 2) return; const N = frames.length; const sourceMap = Array.from({ length: N }, (_, i) => sampleCurve(i)); const jobs = []; const framesToDrop = new Set(); const originalFramesUsed = new Set(); for (let j = 0; j < N - 1; j++) { const outputFramesInInterval = sourceMap.filter(s => s >= j && s < j + 1).length; if (outputFramesInInterval > 1) { const slowdown = outputFramesInInterval; const numToGen = Math.pow(2, Math.ceil(Math.log2(slowdown))) - 1; if (numToGen > 0) { jobs.push({ startIndex: j, endIndex: j + 1, count: numToGen }); } } } const roundedSources = sourceMap.map(s => Math.round(s)); roundedSources.forEach(idx => originalFramesUsed.add(idx)); for (let i = 0; i < N; i++) { if (!originalFramesUsed.has(i)) { framesToDrop.add(i); } } setInterpolationState({ active: true, isProcessing: false, plan: { jobs, framesToDrop: Array.from(framesToDrop), originalCount: N }, progress: 0, message: '' }); };
+            
+            // handle the race condition
+            const executeGeneration = async () => {
+                const { plan } = interpolationState;
+                if (!plan) return;
+
+                setInterpolationState(s => ({ ...s, isProcessing: true, message: 'Starting generation...' }));
+                
+                let allGeneratedFrames = new Map();
+                const totalJobs = plan.jobs.length;
+
+                for (let i = 0; i < totalJobs; i++) {
+                    const job = plan.jobs[i];
+                    setInterpolationState(s => ({ ...s, message: `Generating ${job.count} frame(s) between ${job.startIndex}-${job.endIndex}...`, progress: (i / totalJobs) }));
+                    
+                    const startFrame = frames[job.startIndex];
+                    const endFrame = frames[job.endIndex];
+                    
+                    try {
+                        const blobs = await generateHierarchicalFrames(startFrame, endFrame, job.count);
+                        const newFrames = blobs.map((blob, k) => {
+                            const timeStep = (k + 1) / (blobs.length + 1);
+                            const frameNumber = startFrame.frameNumber + timeStep;
+                            return {
+                                file: new File([blob], `gen_${startFrame.frameNumber}_${k}.png`, { type: 'image/png' }),
+                                url: URL.createObjectURL(blob),
+                                isGenerated: true,
+                                frameNumber,
+                                name: `gen_${startFrame.frameNumber}_${k}.png`,
+                            };
+                        });
+                        allGeneratedFrames.set(job.startIndex, newFrames);
+                    } catch (error) {
+                         console.error('Error generating frames:', error); 
+                         setStatus({ state: 'error', message: `Generation Error: ${error.message}` }); 
+                         setInterpolationState({ active: false, plan: null, progress: 0, message: '', isProcessing: false });
+                         return;
+                    }
+                }
+                
+                setInterpolationState(s => ({ ...s, message: 'Finalizing sequence...', progress: 0.99 }));
+
+                // Assemble final frame list
+                const finalFrames = [];
+                const newlyGenerated = [];
+                const droppedIndices = new Set(plan.framesToDrop);
+                for (let i = 0; i < frames.length; i++) {
+                    if (!droppedIndices.has(i)) {
+                        finalFrames.push(frames[i]);
+                    }
+                    if (allGeneratedFrames.has(i)) {
+                        const generated = allGeneratedFrames.get(i);
+                        finalFrames.push(...generated);
+                        newlyGenerated.push(...generated);
+                    }
                 }
 
-                // The animate function is defined *inside* the effect.
-                // This guarantees it closes over the most recent `currentFps` state.
-                const animate = (timestamp) => {
-                    const frameDuration = 1000 / currentFps;
-                    const deltaTime = timestamp - lastFrameTime.current;
-
-                    if (deltaTime >= frameDuration) {
-                        lastFrameTime.current = timestamp;
-                        // Use functional update to avoid stale state issues
-                        setCurrentOutputFrame(prev => (prev + 1) % 101);
-                    }
+                // Pre-load textures for generated frames to fix race condition ---
+                const manager = new THREE.LoadingManager();
+                manager.onLoad = () => {
+                    // This block runs ONLY after all new textures are loaded
+                    // Clean up old blob URLs to prevent memory leaks
+                    frames.forEach(f => URL.revokeObjectURL(f.url));
                     
-                    // Request the next frame in the loop.
-                    animationFrameRef.current = requestAnimationFrame(animate);
+                    setFrames(finalFrames);
+                    setCurrentOutputFrame(0);
+                    setCurveResetKey(k => k + 1); // Reset curve editor
+                    setStatus({ state: 'ready', message: 'Retiming complete.' });
+                    setInterpolationState({ active: false, plan: null, progress: 0, message: '', isProcessing: false });
                 };
 
-                // Initialize timing and start the animation loop.
-                lastFrameTime.current = performance.now();
-                animationFrameRef.current = requestAnimationFrame(animate);
+                const loader = new THREE.TextureLoader(manager);
+                newlyGenerated.forEach(frame => {
+                    const texture = loader.load(frame.url);
+                    texture.minFilter = THREE.LinearFilter;
+                    texture.magFilter = THREE.LinearFilter;
+                    textureCache.current[frame.url] = texture;
+                });
 
-                // The cleanup function is crucial. It runs whenever the dependencies
-                // (`isPlaying`, `currentFps`) change, or when the component unmounts.
-                // This ensures the old animation loop is ALWAYS cancelled before a new one starts.
-                return () => {
-                    cancelAnimationFrame(animationFrameRef.current);
-                };
-            }, [isPlaying, currentFps]); // The effect re-runs if `isPlaying` or `currentFps` changes.
-
-            const handlePlay = () => {
-                setIsPlaying(prev => !prev);
+                // If no new frames were generated, the manager won't fire, so we must clean up manually.
+                if (newlyGenerated.length === 0) {
+                    manager.onLoad();
+                }
             };
 
-            const handleFpsChange = (e) => {
-                setCurrentFps(parseInt(e.target.value, 10));
-            };
-
-            // --- END: ROBUST PLAYBACK LOGIC ---
-
-            const generateSlowMoFrames = async () => {  
-                if (frames.length < 2) return; 
-                setStatus({ state: 'loading', message: 'Generating frame...' }); 
-                setProgress(0); 
-                try { 
-                    const intermediateFrame = await PlatformService.generateIntermediateFrame(frames[0], frames[1]); const newFrame = { ...intermediateFrame, frameNumber: frames[0].frameNumber + 0.5, name: `generated_${frames[0].frameNumber}_${frames[1].frameNumber}.png`, }; 
-                    const newFrames = [...frames]; 
-                    newFrames.splice(1, 0, newFrame); 
-                    setFrames(newFrames); 
-                    setProgress(100); 
-                    setStatus({ state: 'ready', message: 'Frame generation complete.' }); 
-                } catch (error) { 
-                    console.error('Error generating frames:', error); 
-                    setStatus({ state: 'error', message: `API Error: ${error.message}` }); 
-                } 
-            };
-
-            const handleFilmstripClick = useCallback((targetSourceFrameIndex) => { if (!sampleCurve) return; let lastFrameBeforeTarget = 0; for (let outputFrame = 0; outputFrame <= 100; outputFrame++) { const displayedSourceFrame = sampleCurve(outputFrame); const displayedSourceIndex = Math.floor(displayedSourceFrame); if (displayedSourceIndex === targetSourceFrameIndex) { setCurrentOutputFrame(outputFrame); return; } if (displayedSourceIndex < targetSourceFrameIndex) { lastFrameBeforeTarget = outputFrame; } } setCurrentOutputFrame(lastFrameBeforeTarget); }, [sampleCurve]);
+            const handleExport = useCallback(async () => { if (frames.length === 0 || isExporting) return; setIsExporting(true); setStatus({ state: 'loading', message: 'Preparing export...' }); try { const zip = new JSZip(); const totalFrames = frames.length; const padDigits = String(totalFrames).length; const padNumber = (num, digits) => String(num).padStart(digits, '0'); for (let i = 0; i < totalFrames; i++) { const frame = frames[i]; const filename = `frame_${padNumber(i + 1, padDigits)}.png`; zip.file(filename, frame.file); } setStatus({ state: 'loading', message: 'Zipping frames... 0%'}); const zipBlob = await zip.generateAsync( { type: "blob", compression: "DEFLATE", compressionOptions: { level: 1 } }, (metadata) => { setStatus({ state: 'loading', message: `Zipping frames... ${metadata.percent.toFixed(0)}%` }); } ); const url = URL.createObjectURL(zipBlob); const a = document.createElement('a'); a.style.display = 'none'; a.href = url; a.download = 'tempo_export.zip'; document.body.appendChild(a); a.click(); URL.revokeObjectURL(url); document.body.removeChild(a); setStatus({ state: 'ready', message: 'Export complete!' }); } catch (error) { console.error('Error exporting frames:', error); setStatus({ state: 'error', message: `Export Error: ${error.message}` }); } finally { setIsExporting(false); } }, [frames, isExporting]);
+            const handleFilmstripClick = useCallback((targetSourceFrameIndex) => { if (!sampleCurve) return; let lastFrameBeforeTarget = 0; for (let outputFrame = 0; outputFrame < frames.length; outputFrame++) { const displayedSourceFrame = sampleCurve(outputFrame); const displayedSourceIndex = Math.floor(displayedSourceFrame); if (displayedSourceIndex === targetSourceFrameIndex) { setCurrentOutputFrame(outputFrame); return; } if (displayedSourceIndex < targetSourceFrameIndex) { lastFrameBeforeTarget = outputFrame; } } setCurrentOutputFrame(lastFrameBeforeTarget); }, [sampleCurve, frames.length]);
             const currentSourceIndex = frames.length > 0 ? Math.floor(sampleCurve(currentOutputFrame)) : -1;
 
             return (
                 <div className="app-container">
+                    <InterpolationModal state={interpolationState} onConfirm={executeGeneration} onCancel={() => setInterpolationState({ active: false })} />
                     <header className="header">
                         <div className="logo">Tempo</div>
                         <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
@@ -443,18 +401,12 @@
                     <main className="main-content">
                         <div className="top-section">
                             <div className="curve-panel">
-                                <CurveEditor frames={frames} onCurveChange={setCurve} currentOutputFrame={currentOutputFrame}/>
+                                <CurveEditor frames={frames} onCurveChange={setCurve} curveKey={curveResetKey} currentOutputFrame={currentOutputFrame}/>
                             </div>
                             <div className="preview-panel">
                                 <div className="preview-container">
                                     {frames.length > 0 ? ( 
-                                        <WebGLPreview 
-                                            frames={frames} 
-                                            currentOutputFrame={currentOutputFrame}
-                                            dimensions={frameDimensions}
-                                            sampleCurve={sampleCurve}
-                                            textureCache={textureCache.current}
-                                        /> 
+                                        <WebGLPreview frames={frames} currentOutputFrame={currentOutputFrame} dimensions={frameDimensions} sampleCurve={sampleCurve} textureCache={textureCache.current} /> 
                                     ) : ( 
                                         <div style={{ textAlign: 'center', color: '#888888' }}>
                                             <div style={{ fontSize: '48px', marginBottom: '16px' }}>🎬</div>
@@ -467,7 +419,7 @@
                                     <button className="btn" onClick={handlePlay} disabled={frames.length === 0 || isLoading || isPreloading}>{isPlaying ? '⏸️ Pause' : '▶️ Play'}</button>
                                     <button className="btn btn-secondary" onClick={() => setCurrentOutputFrame(0)} disabled={frames.length === 0 || isLoading || isPreloading}>⏮️</button>
                                     <div className="playhead-display">Out: {currentOutputFrame}</div>
-                                    <input type="range" min={0} max={100} value={currentOutputFrame} onChange={(e) => setCurrentOutputFrame(parseInt(e.target.value))} style={{ flex: 1 }} disabled={frames.length === 0 || isLoading || isPreloading}/>
+                                    <input type="range" min={0} max={frames.length - 1} value={currentOutputFrame} onChange={(e) => setCurrentOutputFrame(parseInt(e.target.value))} style={{ flex: 1 }} disabled={frames.length === 0 || isLoading || isPreloading}/>
                                     
                                     <select value={currentFps} onChange={handleFpsChange} disabled={frames.length === 0 || isLoading || isPreloading}>
                                         {availableFrameRates.map(fps => (
@@ -495,7 +447,7 @@
                                     {frames.map((frame, index) => (
                                         <div key={frame.name + index} className={`filmstrip-item ${frame.isGenerated ? 'generated' : ''} ${index === currentSourceIndex ? 'active' : ''}`} onClick={() => handleFilmstripClick(index)}>
                                             <img src={frame.url} alt={`Frame ${frame.frameNumber}`} />
-                                            <div className="frame-number">{frame.frameNumber}</div>
+                                            <div className="frame-number">{frame.frameNumber.toFixed ? frame.frameNumber.toFixed(2) : frame.frameNumber}</div>
                                         </div>
                                     ))}
                                 </div>
@@ -503,12 +455,18 @@
                             <div className="metadata-panel">
                                 <div className="section">
                                     <h3>RIFE Processing</h3>
-                                    <p className="info-text" style={{marginBottom: '12px', marginTop: 0}}>Generate AI frames for smooth slow motion.</p>
-                                    <button className="btn" onClick={generateSlowMoFrames} disabled={frames.length < 2 || isLoading || isPreloading}>{isLoading ? '🔄 Generating...' : '✨ Generate Slow-Mo'}</button>
+                                    <p className="info-text" style={{marginBottom: '12px', marginTop: 0}}>Bake the retiming curve into the sequence using AI frames.</p>
+                                    <button className="btn" onClick={generateInterpolatedFrames} disabled={frames.length < 2 || isLoading || isPreloading || !rifeModuleRef.current || interpolationState.active}>{interpolationState.active ? '🔄 Processing...' : '✨ Interpolate Frames'}</button>
                                 </div>
                                 <div className="section">
                                     <h3>Export</h3>
-                                    <button className="btn btn-secondary" disabled>📦 Export Sequence</button>
+                                    <button 
+                                        className="btn btn-secondary" 
+                                        onClick={handleExport}
+                                        disabled={frames.length === 0 || isLoading || isPreloading || isExporting || interpolationState.active}
+                                    >
+                                        {isExporting ? '📦 Zipping...' : '📦 Export Sequence'}
+                                    </button>
                                 </div>
                                 <div className="section">
                                     <h3>Project Info</h3>
@@ -525,7 +483,9 @@
             );
         }
 
-        ReactDOM.render(<TempoApp />, document.getElementById('root'));
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<TempoApp />);
     </script>
 </body>
 </html>
